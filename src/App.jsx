@@ -289,7 +289,7 @@ export default function App() {
               return (
                 <div key={idx} className={`bg-white rounded-xl border-t-4 ${theme.border} p-3 shadow-sm`}>
                   <div className="flex justify-between items-center mb-3">
-                    <h3 className={`font-black text-[16px] flex items-center gap-1.5 ${theme.text}`}>{res.name}</h3>
+                    <h3 className={`font-black text-[15px] flex items-center gap-1.5 ${theme.text}`}>{res.name}</h3>
                     <a href={`https://news.google.com/search?q=${encodeURIComponent(res.query)}`} target="_blank" rel="noreferrer" className={`text-[10px] font-bold ${theme.text} ${theme.bg} px-2 py-1 rounded-md flex items-center gap-0.5`}>
                       더보기 <ChevronRight size={12} />
                     </a>
@@ -297,9 +297,9 @@ export default function App() {
                   <div className="space-y-2">
                     {res.articles.map((art, aIdx) => {
                       return (
-                        <a key={aIdx} href={art.link} target="_blank" rel="noreferrer" className="block p-3 rounded-lg bg-slate-50 active:bg-slate-100 border transition-colors hover:border-teal-200 group">
+                        <a key={aIdx} href={art.link} target="_blank" rel="noreferrer" className="block p-2 rounded-lg bg-slate-50 active:bg-slate-100 border transition-colors hover:border-teal-200 group">
                           {/* 텍스트 크기 text-[15px]로 소폭 축소 및 행간 조절 */}
-                          <p className="text-[15px] font-bold text-slate-800 leading-normal mb-2 group-hover:text-teal-700 line-clamp-2">{art.title}</p>
+                          <p className="text-[13px] font-bold text-slate-800 leading-normal mb-2 group-hover:text-teal-700 line-clamp-2">{art.title}</p>
                           <div className="flex justify-between items-center">
                             <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md border bg-slate-100 text-slate-600 border-slate-200">
                               {art.source}
