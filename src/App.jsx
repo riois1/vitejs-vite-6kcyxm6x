@@ -56,7 +56,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const kwRef = collection(db, 'artifacts', appId, 'public', 'data', 'keywords');
+    if (!user) return; // 사용자 로그인 전에는 실행하지 않음
+
+    // [개인화] public 대신 users/uid 경로 사용
+    const kwRef = collection(db, 'artifacts', appId, 'users', user.uid, 'keywords');
     const unsubKw = onSnapshot(kwRef, (snap) => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setKeywords(list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
@@ -65,7 +68,8 @@ export default function App() {
       }
     });
 
-    const tkRef = collection(db, 'artifacts', appId, 'public', 'data', 'tickers');
+    // [개인화] public 대신 users/uid 경로 사용
+    const tkRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tickers');
     const unsubTk = onSnapshot(tkRef, (snap) => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setTickers(list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
@@ -84,7 +88,7 @@ export default function App() {
     });
 
     return () => { unsubKw(); unsubTk(); };
-  }, []);
+  }, [user]); // user 상태가 변경될 때마다(로그인 시) 실행
 
   const fetchMarketTicker = async () => {
     if (tickers.length === 0) return;
@@ -166,17 +170,23 @@ export default function App() {
 
   const addKeywordAction = async (e) => {
     e.preventDefault();
-    if (!newKeyword.trim()) return;
+    if (!newKeyword.trim() || !user) return;
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'keywords'), { name: newKeyword.trim(), createdAt: Date.now() });
+      // [개인화 경로 적용]
+      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'keywords'), { name: newKeyword.trim(), createdAt: Date.now() });
       setNewKeyword("");
     } catch (err) { setStatusMsg("추가 실패"); }
   };
-  const deleteKeyword = async (id) => { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'keywords', id)); };
+  
+  const deleteKeyword = async (id) => { 
+    if (!user) return;
+    // [개인화 경로 적용]
+    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'keywords', id)); 
+  };
 
   const addTickerAction = async (e) => {
     e.preventDefault();
-    if (!newTickerSymbol.trim() || isAddingTicker) return;
+    if (!newTickerSymbol.trim() || isAddingTicker || !user) return;
     setIsAddingTicker(true);
     const symbol = newTickerSymbol.trim().toUpperCase();
     try {
@@ -190,13 +200,19 @@ export default function App() {
         let unit = 'USD';
         if (symbol.includes('.KS') || symbol.includes('.KQ') || symbol === 'KRW=X') unit = '원';
         else if (symbol.startsWith('^')) unit = 'p';
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'tickers'), { name: resolvedName, symbol, unit, createdAt: Date.now() });
+        // [개인화 경로 적용]
+        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'tickers'), { name: resolvedName, symbol, unit, createdAt: Date.now() });
         setNewTickerSymbol(""); setStatusMsg(`${resolvedName} 추가 완료`);
       } else { setStatusMsg("유효하지 않은 심볼"); }
     } catch (err) { setStatusMsg("심볼 확인 오류"); }
     finally { setIsAddingTicker(false); setTimeout(() => setStatusMsg(""), 3000); }
   };
-  const deleteTicker = async (id) => { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tickers', id)); };
+  
+  const deleteTicker = async (id) => { 
+    if (!user) return;
+    // [개인화 경로 적용]
+    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tickers', id)); 
+  };
 
   return (
     <div className="min-h-screen bg-[#F1F5F9] font-sans text-slate-900 pb-20">
@@ -298,7 +314,6 @@ export default function App() {
                     {res.articles.map((art, aIdx) => {
                       return (
                         <a key={aIdx} href={art.link} target="_blank" rel="noreferrer" className="block p-2 rounded-lg bg-slate-50 active:bg-slate-100 border transition-colors hover:border-teal-200 group">
-                          {/* 텍스트 크기 text-[15px]로 소폭 축소 및 행간 조절 */}
                           <p className="text-[13px] font-bold text-slate-800 leading-normal mb-2 group-hover:text-teal-700 line-clamp-2">{art.title}</p>
                           <div className="flex justify-between items-center">
                             <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md border bg-slate-100 text-slate-600 border-slate-200">
