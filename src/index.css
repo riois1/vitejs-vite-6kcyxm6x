@@ -1,3 +1,18 @@
+/* src/index.css */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Vite 기본 중앙정렬 스타일 제거 */
+#root {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  text-align: left; /* 중앙 정렬 해제 */
+}
+
+body {
+  margin: 0;
+  display: block;
+  background-color: #F1F5F9; /* 배경색 유지 */
+}
