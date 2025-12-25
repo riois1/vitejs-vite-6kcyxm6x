@@ -46,30 +46,26 @@ export default function App() {
   const [lookback, setLookback] = useState(2); 
   const [showTickerMgr, setShowTickerMgr] = useState(false);
 
-  // 1. 익명 로그인 처리
+  // 1. 익명 로그인
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
-      if (u) {
-        setUser(u);
-      } else {
-        signInAnonymously(auth).catch(() => setStatusMsg("로그인 오류"));
-      }
+      if (u) setUser(u);
+      else signInAnonymously(auth).catch(() => setStatusMsg("로그인 실패"));
     });
     return () => unsubscribe();
   }, []);
 
-  // 2. 데이터 리스너 (사용자별 경로)
+  // 2. 데이터 실시간 감시 (사용자 개인 경로)
   useEffect(() => {
     if (!user?.uid) return;
 
-    // 키워드 로드
-    const kwPath = `artifacts/${appId}/users/${user.uid}/keywords`;
-    const kwRef = collection(db, kwPath);
+    const kwRef = collection(db, 'artifacts', appId, 'users', user.uid, 'keywords');
     const unsubKw = onSnapshot(kwRef, (snap) => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setKeywords(list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+      const sorted = list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setKeywords(sorted);
       
-      // 샘플 데이터가 없을 때만 추가
+      // 데이터가 없으면 샘플 추가
       if (snap.empty) {
         ["산업은행", "삼성전자", "반도체"].forEach(n => {
           addDoc(kwRef, { name: n, createdAt: Date.now() });
@@ -77,22 +73,15 @@ export default function App() {
       }
     });
 
-    // 티커 로드
-    const tkPath = `artifacts/${appId}/users/${user.uid}/tickers`;
-    const tkRef = collection(db, tkPath);
+    const tkRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tickers');
     const unsubTk = onSnapshot(tkRef, (snap) => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setTickers(list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-      
       if (snap.empty) {
         const defaults = [
           { name: 'KOSPI', symbol: '^KS11', unit: 'p' },
           { name: 'KOSDAQ', symbol: '^KQ11', unit: 'p' },
-          { name: 'USD/KRW', symbol: 'KRW=X', unit: '원' },
-          { name: 'NASDAQ', symbol: '^IXIC', unit: 'p' },
-          { name: 'S&P 500', symbol: '^GSPC', unit: 'p' },
-          { name: '삼성전자', symbol: '005930.KS', unit: '원' },
-          { name: 'Nvidia', symbol: 'NVDA', unit: 'USD' }
+          { name: 'USD/KRW', symbol: 'KRW=X', unit: '원' }
         ];
         defaults.forEach(t => addDoc(tkRef, { ...t, createdAt: Date.now() }));
       }
@@ -101,6 +90,7 @@ export default function App() {
     return () => { unsubKw(); unsubTk(); };
   }, [user]);
 
+  // 마켓 티커 데이터 페칭
   const fetchMarketTicker = async () => {
     if (tickers.length === 0) return;
     try {
@@ -118,51 +108,44 @@ export default function App() {
             const prevPrice = meta.previousClose || closes[closes.length - 2];
             const diff = curPrice - prevPrice;
             const pct = ((diff / prevPrice) * 100).toFixed(2);
-            
-            let formattedPrice, formattedDiff;
-            if (t.unit === '원') {
-              formattedPrice = Math.round(curPrice).toLocaleString();
-              formattedDiff = Math.round(Math.abs(diff)).toLocaleString();
-            } else if (t.unit === 'USD') {
-              formattedPrice = curPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-              formattedDiff = Math.abs(diff).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-            } else {
-              formattedPrice = curPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-              formattedDiff = Math.abs(diff).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            }
-
-            return { 
-              name: t.name, 
-              price: formattedPrice, 
-              unit: t.unit, 
-              diff: formattedDiff, 
-              pct: `${diff >= 0 ? '+' : ''}${pct}%`, 
-              isUp: diff >= 0 
-            };
+            let formattedPrice = curPrice.toLocaleString(undefined, { maximumFractionDigits: 2 });
+            let formattedDiff = Math.abs(diff).toLocaleString(undefined, { maximumFractionDigits: 2 });
+            return { name: t.name, price: formattedPrice, unit: t.unit, diff: formattedDiff, pct: `${diff >= 0 ? '+' : ''}${pct}%`, isUp: diff >= 0 };
           }
-        } catch (e) { return { name: t.name, price: '-', unit: t.unit }; }
+        } catch (e) { return null; }
       }));
-      setMarketData(results.filter(m => m && m.price !== '-'));
+      setMarketData(results.filter(m => m !== null));
     } catch (err) {}
   };
 
   useEffect(() => { fetchMarketTicker(); }, [tickers]);
 
+  // 뉴스 검색 로직 (안정성 강화)
   const searchNews = async () => {
-    if (keywords.length === 0) return;
+    // 리스트가 비어있으면 중단
+    if (!keywords || keywords.length === 0) {
+      setStatusMsg("키워드를 먼저 추가해주세요.");
+      return;
+    }
+
     setIsSearching(true);
     setStatusMsg(`${lookback}일간 뉴스 수집 중...`);
+    
     try {
       const results = [];
+      // 비동기 루프를 순차적으로 실행하여 누락 방지
       for (const kw of keywords) {
         const queryStr = `${kw.name} when:${lookback}d`;
         const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(queryStr)}&hl=ko&gl=KR&ceid=KR:ko`;
         const proxyUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
+        
         const response = await fetch(proxyUrl);
         const data = await response.json();
-        if (data.items) {
+        
+        if (data && data.items) {
           results.push({
-            name: kw.name, query: queryStr,
+            name: kw.name,
+            query: queryStr,
             articles: data.items.slice(0, 4).map(item => {
               const splitTitle = item.title.split(' - ');
               const rawDate = new Date(item.pubDate);
@@ -173,10 +156,13 @@ export default function App() {
         }
       }
       setReport(results);
-      setStatusMsg("수집 완료!");
+      setStatusMsg(results.length > 0 ? "수집 완료!" : "검색 결과가 없습니다.");
+    } catch (err) {
+      setStatusMsg("검색 중 오류 발생");
+    } finally {
+      setIsSearching(false);
       setTimeout(() => setStatusMsg(""), 2000);
-    } catch (err) { setStatusMsg("오류 발생"); }
-    finally { setIsSearching(false); }
+    }
   };
 
   const addKeywordAction = async (e) => {
@@ -188,10 +174,10 @@ export default function App() {
       setNewKeyword("");
     } catch (err) { setStatusMsg("추가 실패"); }
   };
-  
-  const deleteKeyword = async (id) => { 
+
+  const deleteKeyword = async (id) => {
     if (!user?.uid) return;
-    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'keywords', id)); 
+    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'keywords', id));
   };
 
   const addTickerAction = async (e) => {
@@ -207,34 +193,33 @@ export default function App() {
       if (data?.chart?.result?.[0]?.meta) {
         const meta = data.chart.result[0].meta;
         const resolvedName = meta.shortName || meta.fullExchangeName || symbol;
-        let unit = 'USD';
-        if (symbol.includes('.KS') || symbol.includes('.KQ') || symbol === 'KRW=X') unit = '원';
-        else if (symbol.startsWith('^')) unit = 'p';
+        let unit = (symbol.includes('.KS') || symbol.includes('.KQ') || symbol === 'KRW=X') ? '원' : 'USD';
+        if (symbol.startsWith('^')) unit = 'p';
         const tkRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tickers');
         await addDoc(tkRef, { name: resolvedName, symbol, unit, createdAt: Date.now() });
-        setNewTickerSymbol(""); setStatusMsg(`${resolvedName} 추가 완료`);
-      } else { setStatusMsg("유효하지 않은 심볼"); }
-    } catch (err) { setStatusMsg("심볼 확인 오류"); }
-    finally { setIsAddingTicker(false); setTimeout(() => setStatusMsg(""), 3000); }
+        setNewTickerSymbol(""); setStatusMsg(`${resolvedName} 추가`);
+      }
+    } catch (err) { setStatusMsg("심볼 오류"); }
+    finally { setIsAddingTicker(false); setTimeout(() => setStatusMsg(""), 2000); }
   };
-  
-  const deleteTicker = async (id) => { 
+
+  const deleteTicker = async (id) => {
     if (!user?.uid) return;
-    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tickers', id)); 
+    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tickers', id));
   };
 
   return (
-    <div className="min-h-screen bg-[#F1F5F9] font-sans text-slate-900 pb-20">
+    <div className="min-h-screen bg-[#F1F5F9] font-sans text-slate-900 pb-10">
       <section className="bg-[#0F172A] text-white overflow-hidden h-8 flex items-center sticky top-0 z-50 shadow-md">
         <div className="flex whitespace-nowrap animate-marquee">
-          {[...marketData, ...marketData].map((m, idx) => (
+          {marketData.concat(marketData).map((m, idx) => (
             <div key={idx} className="flex items-center gap-2 px-5 border-r border-slate-700/50">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">{m.name}</span>
-              <span className="text-xs font-black">{m.price}{m.unit !== 'p' && <span className="text-[9px] ml-0.5 opacity-40 font-normal">{m.unit}</span>}</span>
-              <span className={`text-[10px] font-bold flex items-center gap-0.5 ${m.isUp ? 'text-rose-500' : 'text-blue-500'}`}>{m.isUp ? '▲' : '▼'}{m.diff}<span className="text-[9px] opacity-70 ml-0.5">({m.pct})</span></span>
+              <span className="text-[10px] font-bold text-slate-400 uppercase">{m.name}</span>
+              <span className="text-xs font-black">{m.price}<span className="text-[9px] ml-0.5 opacity-40">{m.unit}</span></span>
+              <span className={`text-[10px] font-bold ${m.isUp ? 'text-rose-500' : 'text-blue-500'}`}>{m.isUp ? '▲' : '▼'}{m.diff}</span>
             </div>
           ))}
-          {marketData.length === 0 && <span className="text-xs text-slate-500 px-4 tracking-widest uppercase">Initializing Ticker...</span>}
+          {marketData.length === 0 && <span className="text-xs text-slate-500 px-4">Loading Market...</span>}
         </div>
       </section>
 
@@ -246,13 +231,13 @@ export default function App() {
             <p className="text-[7px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">Intelligence Monitor v6.8</p>
           </div>
         </div>
-        <button onClick={() => setShowTickerMgr(true)} className="p-2 text-slate-400 hover:text-teal-600 active:scale-90 transition-all"><LineChart size={20} /></button>
+        <button onClick={() => setShowTickerMgr(true)} className="p-2 text-slate-400 hover:text-teal-600 transition-all"><LineChart size={20} /></button>
       </header>
 
       <main className="p-3 space-y-3 max-w-2xl mx-auto">
         <section className="bg-white rounded-xl shadow-sm border p-4 space-y-4">
           <div className="flex justify-between items-center">
-            <h2 className="text-base font-black flex items-center gap-2"><Search size={18} className="text-teal-500"/> 검색 Keyword</h2>
+            <h2 className="text-base font-black flex items-center gap-2"><Search size={18} className="text-teal-500"/> Keyword</h2>
             <div className="flex items-center bg-slate-100 rounded-full px-2 py-0.5 border">
               <span className="text-[9px] font-bold text-slate-400 mr-1.5">PERIOD</span>
               <select value={lookback} onChange={(e) => setLookback(Number(e.target.value))} className="bg-transparent text-[10px] font-bold outline-none">
@@ -263,11 +248,15 @@ export default function App() {
           <form onSubmit={addKeywordAction} className="flex gap-1.5">
             <input type="text" value={newKeyword} onChange={(e) => setNewKeyword(e.target.value)} placeholder="키워드 추가" className="flex-1 bg-slate-50 border rounded-lg px-3 py-2 text-[13px] font-bold outline-none focus:border-teal-500 shadow-inner" />
             <button type="submit" className="bg-slate-900 text-white p-3 rounded-lg active:scale-95 transition-all shrink-0"><Plus size={20} /></button>
-            <button type="button" onClick={searchNews} disabled={isSearching || keywords.length === 0} className="bg-teal-500 text-white px-8 py-2 rounded-lg font-black text-[15px] shadow-sm active:scale-95 transition-all flex items-center gap-1.5 shrink-0">{isSearching ? <RefreshCcw size={14} className="animate-spin" /> : <FileText size={14} />} 검색</button>
+            <button type="button" onClick={searchNews} disabled={isSearching || keywords.length === 0} className="bg-teal-500 text-white px-8 py-2 rounded-lg font-black text-[15px] shadow-sm active:scale-95 transition-all flex items-center gap-1.5 shrink-0">
+              {isSearching ? <RefreshCcw size={14} className="animate-spin" /> : <FileText size={14} />} 검색
+            </button>
           </form>
           <div className="flex flex-wrap gap-1.5 pt-1">
             {keywords.map((kw) => (
-              <div key={kw.id} className="bg-slate-50 border pl-2 pr-1 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1">{kw.name}<button onClick={() => deleteKeyword(kw.id)} className="text-slate-400 hover:text-rose-500"><X size={14} /></button></div>
+              <div key={kw.id} className="bg-slate-50 border pl-2 pr-1 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1">
+                {kw.name}<button onClick={() => deleteKeyword(kw.id)} className="text-slate-400 hover:text-rose-500"><X size={14} /></button>
+              </div>
             ))}
           </div>
         </section>
@@ -279,16 +268,16 @@ export default function App() {
               return (
                 <div key={idx} className={`bg-white rounded-xl border-t-4 ${theme.border} p-3 shadow-sm`}>
                   <div className="flex justify-between items-center mb-3">
-                    <h3 className={`font-black text-[15px] flex items-center gap-1.5 ${theme.text}`}>{res.name}</h3>
-                    <a href={`https://news.google.com/search?q=${encodeURIComponent(res.query)}`} target="_blank" rel="noreferrer" className={`text-[10px] font-bold ${theme.text} ${theme.bg} px-2 py-1 rounded-md flex items-center gap-0.5`}>더보기 <ChevronRight size={12} /></a>
+                    <h3 className={`font-black text-[15px] ${theme.text}`}>{res.name}</h3>
+                    <a href={`https://news.google.com/search?q=${encodeURIComponent(res.query)}`} target="_blank" rel="noreferrer" className={`text-[10px] font-bold ${theme.text} ${theme.bg} px-2 py-1 rounded-md`}>더보기</a>
                   </div>
                   <div className="space-y-2">
                     {res.articles.map((art, aIdx) => (
                       <a key={aIdx} href={art.link} target="_blank" rel="noreferrer" className="block p-2 rounded-lg bg-slate-50 active:bg-slate-100 border transition-colors hover:border-teal-200 group">
                         <p className="text-[13px] font-bold text-slate-800 leading-normal mb-2 group-hover:text-teal-700 line-clamp-2">{art.title}</p>
-                        <div className="flex justify-between items-center">
-                          <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md border bg-slate-100 text-slate-600 border-slate-200">{art.source}</span>
-                          <span className="text-[10px] font-bold text-slate-400">{art.date}</span>
+                        <div className="flex justify-between items-center text-[10px]">
+                          <span className="font-black px-1.5 py-0.5 rounded-md border bg-slate-100 text-slate-600">{art.source}</span>
+                          <span className="font-bold text-slate-400">{art.date}</span>
                         </div>
                       </a>
                     ))}
@@ -302,23 +291,20 @@ export default function App() {
 
       {showTickerMgr && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl w-full max-w-sm p-6 shadow-2xl animate-in zoom-in-95">
+          <div className="bg-white rounded-3xl w-full max-w-sm p-6 shadow-2xl">
             <div className="flex justify-between items-center mb-6">
-              <div className="flex items-center gap-2"><BarChart3 size={20} className="text-teal-600" /><h3 className="font-black text-lg text-slate-900">티커 관리</h3></div>
+              <h3 className="font-black text-lg text-slate-900">티커 관리</h3>
               <button onClick={() => setShowTickerMgr(false)} className="text-slate-400"><X size={24} /></button>
             </div>
             <div className="space-y-4">
-              <form onSubmit={addTickerAction} className="space-y-3">
-                <div className="flex gap-2">
-                  <input type="text" value={newTickerSymbol} onChange={e=>setNewTickerSymbol(e.target.value)} placeholder="심볼 입력 (NVDA, 005930.KS)" className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:border-teal-500 uppercase shadow-inner" disabled={isAddingTicker} />
-                  <button type="submit" className="bg-teal-600 text-white px-5 rounded-xl font-black shadow-md hover:bg-teal-700 transition-all flex items-center justify-center disabled:opacity-50" disabled={isAddingTicker || !newTickerSymbol.trim()}>{isAddingTicker ? <Loader2 className="animate-spin" size={18} /> : "추가"}</button>
-                </div>
-                <p className="text-[9px] text-slate-400 pl-1">심볼 예시: ^KS11, ^IXIC, KRW=X, AAPL</p>
+              <form onSubmit={addTickerAction} className="flex gap-2">
+                <input type="text" value={newTickerSymbol} onChange={e=>setNewTickerSymbol(e.target.value)} placeholder="심볼(예: NVDA)" className="flex-1 bg-slate-50 border rounded-xl px-4 py-3 text-sm font-bold uppercase" disabled={isAddingTicker} />
+                <button type="submit" className="bg-teal-600 text-white px-5 rounded-xl font-black disabled:opacity-50" disabled={isAddingTicker || !newTickerSymbol.trim()}>추가</button>
               </form>
-              <div className="max-h-60 overflow-y-auto space-y-2 pr-1 border-t border-slate-100 pt-4">
+              <div className="max-h-60 overflow-y-auto space-y-2">
                 {tickers.map(tk => (
-                  <div key={tk.id} className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border border-slate-100">
-                    <div className="flex flex-col"><span className="text-xs font-black text-slate-800 line-clamp-1">{tk.name}</span><span className="text-[10px] text-slate-400 font-mono">{tk.symbol}</span></div>
+                  <div key={tk.id} className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border">
+                    <div className="flex flex-col"><span className="text-xs font-black">{tk.name}</span><span className="text-[10px] text-slate-400">{tk.symbol}</span></div>
                     <button onClick={() => deleteTicker(tk.id)} className="text-slate-300 hover:text-rose-500"><Trash2 size={16} /></button>
                   </div>
                 ))}
@@ -328,7 +314,7 @@ export default function App() {
         </div>
       )}
 
-      {statusMsg && <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full font-bold shadow-xl z-[100] animate-bounce text-sm whitespace-nowrap">{statusMsg}</div>}
+      {statusMsg && <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full font-bold shadow-xl z-[100] text-sm whitespace-nowrap animate-bounce">{statusMsg}</div>}
 
       <style>{`
         @keyframes marquee { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } } 
