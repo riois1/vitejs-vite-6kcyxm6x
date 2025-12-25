@@ -24,7 +24,6 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = 'keyword-newsbot-v6';
 
-// 뉴스 박스 테마 색상 (키워드별 가독성 향상용)
 const THEME_COLORS = [
   { border: 'border-t-teal-500', text: 'text-teal-600', bg: 'bg-teal-50' },
   { border: 'border-t-blue-500', text: 'text-blue-600', bg: 'bg-blue-50' },
@@ -47,48 +46,60 @@ export default function App() {
   const [lookback, setLookback] = useState(2); 
   const [showTickerMgr, setShowTickerMgr] = useState(false);
 
+  // 1. 익명 로그인 처리
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
-      if (u) setUser(u);
-      else signInAnonymously(auth);
+      if (u) {
+        setUser(u);
+      } else {
+        signInAnonymously(auth).catch(() => setStatusMsg("로그인 오류"));
+      }
     });
     return () => unsubscribe();
   }, []);
 
+  // 2. 데이터 리스너 (사용자별 경로)
   useEffect(() => {
-    if (!user) return; // 사용자 로그인 전에는 실행하지 않음
+    if (!user?.uid) return;
 
-    // [개인화] public 대신 users/uid 경로 사용
-    const kwRef = collection(db, 'artifacts', appId, 'users', user.uid, 'keywords');
+    // 키워드 로드
+    const kwPath = `artifacts/${appId}/users/${user.uid}/keywords`;
+    const kwRef = collection(db, kwPath);
     const unsubKw = onSnapshot(kwRef, (snap) => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setKeywords(list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-      if (list.length === 0) {
-        ["산업은행", "삼성전자", "반도체"].forEach(n => addDoc(kwRef, { name: n, createdAt: Date.now() }));
+      
+      // 샘플 데이터가 없을 때만 추가
+      if (snap.empty) {
+        ["산업은행", "삼성전자", "반도체"].forEach(n => {
+          addDoc(kwRef, { name: n, createdAt: Date.now() });
+        });
       }
     });
 
-    // [개인화] public 대신 users/uid 경로 사용
-    const tkRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tickers');
+    // 티커 로드
+    const tkPath = `artifacts/${appId}/users/${user.uid}/tickers`;
+    const tkRef = collection(db, tkPath);
     const unsubTk = onSnapshot(tkRef, (snap) => {
       const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setTickers(list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-      if (list.length === 0) {
-          const defaults = [
-            { name: 'KOSPI', symbol: '^KS11', unit: 'p' },
-            { name: 'KOSDAQ', symbol: '^KQ11', unit: 'p' },
-            { name: 'USD/KRW', symbol: 'KRW=X', unit: '원' },
-            { name: 'NASDAQ', symbol: '^IXIC', unit: 'p' },
-            { name: 'S&P 500', symbol: '^GSPC', unit: 'p' },
-            { name: '삼성전자', symbol: '005930.KS', unit: '원' },
-            { name: 'Nvidia', symbol: 'NVDA', unit: 'USD' }
-          ];
-          defaults.forEach(t => addDoc(tkRef, { ...t, createdAt: Date.now() }));
-        }
+      
+      if (snap.empty) {
+        const defaults = [
+          { name: 'KOSPI', symbol: '^KS11', unit: 'p' },
+          { name: 'KOSDAQ', symbol: '^KQ11', unit: 'p' },
+          { name: 'USD/KRW', symbol: 'KRW=X', unit: '원' },
+          { name: 'NASDAQ', symbol: '^IXIC', unit: 'p' },
+          { name: 'S&P 500', symbol: '^GSPC', unit: 'p' },
+          { name: '삼성전자', symbol: '005930.KS', unit: '원' },
+          { name: 'Nvidia', symbol: 'NVDA', unit: 'USD' }
+        ];
+        defaults.forEach(t => addDoc(tkRef, { ...t, createdAt: Date.now() }));
+      }
     });
 
     return () => { unsubKw(); unsubTk(); };
-  }, [user]); // user 상태가 변경될 때마다(로그인 시) 실행
+  }, [user]);
 
   const fetchMarketTicker = async () => {
     if (tickers.length === 0) return;
@@ -170,23 +181,22 @@ export default function App() {
 
   const addKeywordAction = async (e) => {
     e.preventDefault();
-    if (!newKeyword.trim() || !user) return;
+    if (!newKeyword.trim() || !user?.uid) return;
     try {
-      // [개인화 경로 적용]
-      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'keywords'), { name: newKeyword.trim(), createdAt: Date.now() });
+      const kwRef = collection(db, 'artifacts', appId, 'users', user.uid, 'keywords');
+      await addDoc(kwRef, { name: newKeyword.trim(), createdAt: Date.now() });
       setNewKeyword("");
     } catch (err) { setStatusMsg("추가 실패"); }
   };
   
   const deleteKeyword = async (id) => { 
-    if (!user) return;
-    // [개인화 경로 적용]
+    if (!user?.uid) return;
     await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'keywords', id)); 
   };
 
   const addTickerAction = async (e) => {
     e.preventDefault();
-    if (!newTickerSymbol.trim() || isAddingTicker || !user) return;
+    if (!newTickerSymbol.trim() || isAddingTicker || !user?.uid) return;
     setIsAddingTicker(true);
     const symbol = newTickerSymbol.trim().toUpperCase();
     try {
@@ -200,8 +210,8 @@ export default function App() {
         let unit = 'USD';
         if (symbol.includes('.KS') || symbol.includes('.KQ') || symbol === 'KRW=X') unit = '원';
         else if (symbol.startsWith('^')) unit = 'p';
-        // [개인화 경로 적용]
-        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'tickers'), { name: resolvedName, symbol, unit, createdAt: Date.now() });
+        const tkRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tickers');
+        await addDoc(tkRef, { name: resolvedName, symbol, unit, createdAt: Date.now() });
         setNewTickerSymbol(""); setStatusMsg(`${resolvedName} 추가 완료`);
       } else { setStatusMsg("유효하지 않은 심볼"); }
     } catch (err) { setStatusMsg("심볼 확인 오류"); }
@@ -209,35 +219,25 @@ export default function App() {
   };
   
   const deleteTicker = async (id) => { 
-    if (!user) return;
-    // [개인화 경로 적용]
+    if (!user?.uid) return;
     await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tickers', id)); 
   };
 
   return (
     <div className="min-h-screen bg-[#F1F5F9] font-sans text-slate-900 pb-20">
-      
-      {/* 티커 바 */}
       <section className="bg-[#0F172A] text-white overflow-hidden h-8 flex items-center sticky top-0 z-50 shadow-md">
         <div className="flex whitespace-nowrap animate-marquee">
           {[...marketData, ...marketData].map((m, idx) => (
             <div key={idx} className="flex items-center gap-2 px-5 border-r border-slate-700/50">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">{m.name}</span>
-              <span className="text-xs font-black">
-                {m.price}
-                {m.unit !== 'p' && <span className="text-[9px] ml-0.5 opacity-40 font-normal">{m.unit}</span>}
-              </span>
-              <span className={`text-[10px] font-bold flex items-center gap-0.5 ${m.isUp ? 'text-rose-500' : 'text-blue-500'}`}>
-                {m.isUp ? '▲' : '▼'}{m.diff}
-                <span className="text-[9px] opacity-70 ml-0.5">({m.pct})</span>
-              </span>
+              <span className="text-xs font-black">{m.price}{m.unit !== 'p' && <span className="text-[9px] ml-0.5 opacity-40 font-normal">{m.unit}</span>}</span>
+              <span className={`text-[10px] font-bold flex items-center gap-0.5 ${m.isUp ? 'text-rose-500' : 'text-blue-500'}`}>{m.isUp ? '▲' : '▼'}{m.diff}<span className="text-[9px] opacity-70 ml-0.5">({m.pct})</span></span>
             </div>
           ))}
           {marketData.length === 0 && <span className="text-xs text-slate-500 px-4 tracking-widest uppercase">Initializing Ticker...</span>}
         </div>
       </section>
 
-      {/* 헤더 */}
       <header className="bg-white border-b px-4 py-3 flex justify-between items-center sticky top-8 z-40 shadow-sm">
         <div className="flex items-center gap-2">
           <div className="bg-slate-900 p-1.5 rounded-lg"><Globe size={18} className="text-teal-400" /></div>
@@ -246,16 +246,10 @@ export default function App() {
             <p className="text-[7px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">Intelligence Monitor v6.8</p>
           </div>
         </div>
-        <button 
-          onClick={() => setShowTickerMgr(true)} 
-          className="p-2 text-slate-400 hover:text-teal-600 active:scale-90 transition-all"
-        >
-          <LineChart size={20} />
-        </button>
+        <button onClick={() => setShowTickerMgr(true)} className="p-2 text-slate-400 hover:text-teal-600 active:scale-90 transition-all"><LineChart size={20} /></button>
       </header>
 
       <main className="p-3 space-y-3 max-w-2xl mx-auto">
-        {/* 키워드 관리 섹션 - 마진/패딩 축소 및 버튼 통합 */}
         <section className="bg-white rounded-xl shadow-sm border p-4 space-y-4">
           <div className="flex justify-between items-center">
             <h2 className="text-base font-black flex items-center gap-2"><Search size={18} className="text-teal-500"/> 검색 Keyword</h2>
@@ -266,34 +260,14 @@ export default function App() {
               </select>
             </div>
           </div>
-
-          {/* 입력창과 버튼들 한 줄 배치 */}
           <form onSubmit={addKeywordAction} className="flex gap-1.5">
-            <input 
-              type="text" 
-              value={newKeyword} 
-              onChange={(e) => setNewKeyword(e.target.value)} 
-              placeholder="키워드 추가" 
-              className="flex-1 bg-slate-50 border rounded-lg px-3 py-2 text-[13px] font-bold outline-none focus:border-teal-500 shadow-inner"
-            />
-            <button type="submit" className="bg-slate-900 text-white p-3 rounded-lg active:scale-95 transition-all shrink-0">
-              <Plus size={20} />
-            </button>
-            <button 
-              type="button"
-              onClick={searchNews} 
-              disabled={isSearching || keywords.length === 0} 
-              className="bg-teal-500 text-white px-8 py-2 rounded-lg font-black text-[15px] shadow-sm active:scale-95 transition-all flex items-center gap-1.5 shrink-0"
-            >
-              {isSearching ? <RefreshCcw size={14} className="animate-spin" /> : <FileText size={14} />} 검색
-            </button>
+            <input type="text" value={newKeyword} onChange={(e) => setNewKeyword(e.target.value)} placeholder="키워드 추가" className="flex-1 bg-slate-50 border rounded-lg px-3 py-2 text-[13px] font-bold outline-none focus:border-teal-500 shadow-inner" />
+            <button type="submit" className="bg-slate-900 text-white p-3 rounded-lg active:scale-95 transition-all shrink-0"><Plus size={20} /></button>
+            <button type="button" onClick={searchNews} disabled={isSearching || keywords.length === 0} className="bg-teal-500 text-white px-8 py-2 rounded-lg font-black text-[15px] shadow-sm active:scale-95 transition-all flex items-center gap-1.5 shrink-0">{isSearching ? <RefreshCcw size={14} className="animate-spin" /> : <FileText size={14} />} 검색</button>
           </form>
-
           <div className="flex flex-wrap gap-1.5 pt-1">
             {keywords.map((kw) => (
-              <div key={kw.id} className="bg-slate-50 border pl-2 pr-1 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1">
-                {kw.name}<button onClick={() => deleteKeyword(kw.id)} className="text-slate-400 hover:text-rose-500"><X size={14} /></button>
-              </div>
+              <div key={kw.id} className="bg-slate-50 border pl-2 pr-1 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1">{kw.name}<button onClick={() => deleteKeyword(kw.id)} className="text-slate-400 hover:text-rose-500"><X size={14} /></button></div>
             ))}
           </div>
         </section>
@@ -306,24 +280,18 @@ export default function App() {
                 <div key={idx} className={`bg-white rounded-xl border-t-4 ${theme.border} p-3 shadow-sm`}>
                   <div className="flex justify-between items-center mb-3">
                     <h3 className={`font-black text-[15px] flex items-center gap-1.5 ${theme.text}`}>{res.name}</h3>
-                    <a href={`https://news.google.com/search?q=${encodeURIComponent(res.query)}`} target="_blank" rel="noreferrer" className={`text-[10px] font-bold ${theme.text} ${theme.bg} px-2 py-1 rounded-md flex items-center gap-0.5`}>
-                      더보기 <ChevronRight size={12} />
-                    </a>
+                    <a href={`https://news.google.com/search?q=${encodeURIComponent(res.query)}`} target="_blank" rel="noreferrer" className={`text-[10px] font-bold ${theme.text} ${theme.bg} px-2 py-1 rounded-md flex items-center gap-0.5`}>더보기 <ChevronRight size={12} /></a>
                   </div>
                   <div className="space-y-2">
-                    {res.articles.map((art, aIdx) => {
-                      return (
-                        <a key={aIdx} href={art.link} target="_blank" rel="noreferrer" className="block p-2 rounded-lg bg-slate-50 active:bg-slate-100 border transition-colors hover:border-teal-200 group">
-                          <p className="text-[13px] font-bold text-slate-800 leading-normal mb-2 group-hover:text-teal-700 line-clamp-2">{art.title}</p>
-                          <div className="flex justify-between items-center">
-                            <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md border bg-slate-100 text-slate-600 border-slate-200">
-                              {art.source}
-                            </span>
-                            <span className="text-[10px] font-bold text-slate-400">{art.date}</span>
-                          </div>
-                        </a>
-                      );
-                    })}
+                    {res.articles.map((art, aIdx) => (
+                      <a key={aIdx} href={art.link} target="_blank" rel="noreferrer" className="block p-2 rounded-lg bg-slate-50 active:bg-slate-100 border transition-colors hover:border-teal-200 group">
+                        <p className="text-[13px] font-bold text-slate-800 leading-normal mb-2 group-hover:text-teal-700 line-clamp-2">{art.title}</p>
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md border bg-slate-100 text-slate-600 border-slate-200">{art.source}</span>
+                          <span className="text-[10px] font-bold text-slate-400">{art.date}</span>
+                        </div>
+                      </a>
+                    ))}
                   </div>
                 </div>
               );
@@ -332,7 +300,6 @@ export default function App() {
         )}
       </main>
 
-      {/* 티커 관리 모달 */}
       {showTickerMgr && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl w-full max-w-sm p-6 shadow-2xl animate-in zoom-in-95">
@@ -346,7 +313,7 @@ export default function App() {
                   <input type="text" value={newTickerSymbol} onChange={e=>setNewTickerSymbol(e.target.value)} placeholder="심볼 입력 (NVDA, 005930.KS)" className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:border-teal-500 uppercase shadow-inner" disabled={isAddingTicker} />
                   <button type="submit" className="bg-teal-600 text-white px-5 rounded-xl font-black shadow-md hover:bg-teal-700 transition-all flex items-center justify-center disabled:opacity-50" disabled={isAddingTicker || !newTickerSymbol.trim()}>{isAddingTicker ? <Loader2 className="animate-spin" size={18} /> : "추가"}</button>
                 </div>
-                <p className="text-[9px] text-slate-400 pl-1">심볼 예시: ^KS11(코스피), ^IXIC(나스닥), KRW=X(환율), AAPL(애플)</p>
+                <p className="text-[9px] text-slate-400 pl-1">심볼 예시: ^KS11, ^IXIC, KRW=X, AAPL</p>
               </form>
               <div className="max-h-60 overflow-y-auto space-y-2 pr-1 border-t border-slate-100 pt-4">
                 {tickers.map(tk => (
